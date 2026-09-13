@@ -40,9 +40,10 @@ alice 登录后看到：
 需要 Go 1.27.1 或更高版本。
 
 ```sh
-# 1. 构建。CGO_ENABLED=0 得到静态链接的单文件，可以直接拷到 NAS、容器等没有 Go 环境的机器上运行
+# 1. 构建。CGO_ENABLED=0 得到静态链接的单文件，可以直接拷到 NAS 等没有 Go 环境的机器上运行；
+#    -trimpath -ldflags="-s -w" 去掉构建路径、符号表和调试信息，二进制约小三分之一
 #    （交叉编译时再加 GOOS/GOARCH，例如 GOOS=linux GOARCH=arm64）
-CGO_ENABLED=0 go build -o webdav-mux .
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o webdav-mux .
 
 # 2. 为每个账号生成密码哈希（交互式输入；也可以 echo 'password' | ./webdav-mux hash-password）
 ./webdav-mux hash-password
@@ -63,6 +64,93 @@ CGO_ENABLED=0 go build -o webdav-mux .
 ```
 
 新配置校验失败时继续使用旧配置，并在日志里报错。`listen` 和“是否启用 TLS”在启动时确定，修改它们需要重启；证书文件本身会在热加载时重新读取，可用于更换证书。
+
+## 使用 Docker
+
+用仓库里的 [Dockerfile](Dockerfile) 构建的镜像基于 `scratch`，里面只有一个静态链接、去掉了符号表和调试信息的二进制，以及 CA 证书（访问 HTTPS 上游时校验证书用）。按架构不同，镜像压缩后约 3.5 MiB，解压后 8 到 9 MiB。镜像的约定：
+
+- 默认命令是 `serve -config /etc/webdav-mux/config.yaml`，把配置文件挂载到这个路径即可。
+- 在容器内以 UID/GID `65532` 运行。挂载进去的配置文件、证书和本地目录需要对这个 UID 可读，否则用 `docker run --user` 换成有权限的 UID。
+- 声明的端口是 8080。配置里的 `listen` 要监听所有地址（默认的 `:8080` 即可），写成 `127.0.0.1:8080` 的话容器外访问不到。
+- 镜像里没有时区数据，日志时间是 UTC。
+
+### 构建单一架构的镜像
+
+```sh
+docker build -t webdav-mux .
+```
+
+得到的镜像与执行构建的机器架构相同。
+
+### 构建多架构镜像
+
+需要 Docker Buildx（Docker Desktop 和较新的 Docker Engine 都自带）。Dockerfile 的编译阶段固定在构建机的原生架构上运行，用 Go 交叉编译产出各个目标架构的二进制，所以构建其他架构的镜像**不需要安装 QEMU**，速度和本机构建差不多。
+
+1. 创建一个使用 `docker-container` 驱动的构建器。只需执行一次。Docker 默认的构建器在没有启用 containerd 镜像存储时，不能构建多架构镜像。
+
+   ```sh
+   docker buildx create --name multiarch --driver docker-container --use
+   ```
+
+2. 构建并推送到镜像仓库。多架构镜像是一个清单列表（manifest list），要直接推送到仓库（Docker Hub、GHCR、自建 registry 等，先 `docker login`）：
+
+   ```sh
+   docker buildx build \
+     --platform linux/amd64,linux/arm64,linux/arm/v7 \
+     -t registry.example.com/yourname/webdav-mux:latest \
+     --push .
+   ```
+
+   `--platform` 按需增减，Go 支持的 Linux 架构都可以用：
+   - `linux/amd64`：常见的 PC 和服务器；
+   - `linux/arm64`：树莓派 3/4/5 的 64 位系统、苹果芯片、多数 ARM NAS；
+   - `linux/arm/v7`、`linux/arm/v6`：32 位 ARM 设备；
+   - `linux/386`、`linux/ppc64le`、`linux/s390x`、`linux/riscv64` 等。
+
+3. 查看镜像包含哪些架构：
+
+   ```sh
+   docker buildx imagetools inspect registry.example.com/yourname/webdav-mux:latest
+   ```
+
+   在目标机器上 `docker pull` 时，Docker 会自动选择与该机器架构匹配的那一份。
+
+没有镜像仓库时，可以按目标机器的架构单独构建，导出成文件拷过去。`--load` 一次只能导入一个架构，除非本机 Docker 启用了 containerd 镜像存储：
+
+```sh
+docker buildx build --platform linux/arm64 -t webdav-mux:arm64 --load .
+docker save webdav-mux:arm64 | gzip > webdav-mux-arm64.tar.gz
+
+# 在目标机器上
+gunzip -c webdav-mux-arm64.tar.gz | docker load
+```
+
+编译用的 Go 版本默认与 `go.mod` 一致，可以用 `--build-arg GO_VERSION=<版本>` 覆盖，但不能低于 `go.mod` 要求的版本。
+
+构建上下文由 [.dockerignore](.dockerignore) 按白名单放行 `go.mod`、`go.sum` 和 Go 源码（规则的边界情况见文件内的注释），本地的 `config.yaml`、证书私钥等文件不会被发送给构建器。新增顶层源码目录，或者 `go:embed` 之类的非 `.go` 构建输入时，要同步修改 `.dockerignore`，否则镜像构建会因为缺文件而失败。
+
+### 运行容器
+
+```sh
+docker run -d --name webdav-mux --restart unless-stopped \
+  -p 8080:8080 \
+  -v /path/to/config.yaml:/etc/webdav-mux/config.yaml:ro \
+  -v /srv/media:/srv/media:ro \
+  registry.example.com/yourname/webdav-mux:latest
+```
+
+- 配置里本地上游的 `dir` 写的是**容器内**的路径，对应的目录要用 `-v` 挂载进去，建议加 `:ro` 只读挂载。
+- 启用 TLS 时，证书和私钥同样挂载进容器，`tls.cert`、`tls.key` 写容器内的路径。
+- 热加载配置：`docker kill -s HUP webdav-mux`。
+- 校验配置：
+
+  ```sh
+  docker run --rm -v /path/to/config.yaml:/etc/webdav-mux/config.yaml:ro \
+    registry.example.com/yourname/webdav-mux:latest check -config /etc/webdav-mux/config.yaml
+  ```
+
+  配置里引用的本地目录也要一并挂载，否则校验会报目录不存在。
+- 生成密码哈希：`docker run --rm -it registry.example.com/yourname/webdav-mux:latest hash-password`。
 
 ## 配置参考
 
@@ -216,3 +304,4 @@ go test -race ./...
 | `internal/davxml` | multistatus 流式改写、PROPFIND 请求体解析、合成目录的响应生成 |
 | `internal/localdav` | 本地目录上游：只读的 `os.Root` 文件系统和进程内 `http.RoundTripper` |
 | `internal/server` | HTTP 处理：认证、目录树、转发、重定向跟随、错误映射 |
+| `Dockerfile`、`.dockerignore` | 多架构镜像构建，见“使用 Docker” |
