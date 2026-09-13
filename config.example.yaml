@@ -1,0 +1,44 @@
+# webdav-mux 配置示例。字段说明见 README.md 的“配置参考”一节。
+# 修改后可以先运行 `webdav-mux check -config config.yaml` 校验，
+# 再向运行中的进程发送 SIGHUP 热加载（listen 和是否启用 tls 需要重启才生效）。
+
+# 监听地址，默认 ":8080"。
+listen: ":8080"
+
+# 可选：内置 HTTPS。直接暴露在公网时强烈建议开启，否则 Basic 认证的密码是明文传输的。
+# tls:
+#   cert: /etc/webdav-mux/fullchain.pem
+#   key: /etc/webdav-mux/privkey.pem
+
+# 上游：远程 WebDAV 服务（url）或本地目录（dir），每个上游二者选一。
+upstreams:
+  nas:
+    # 上游 WebDAV 的根地址。挂载目标路径相对这个地址。
+    url: http://192.168.1.10:5005/dav
+  cloud:
+    url: https://cloud.example.com/remote.php/dav/files/bob
+    # 可选：上游需要 Basic 认证时填写。
+    username: bob
+    password: "app-password"
+    # 可选：上游使用自签名证书时设为 true（只对这个上游自身生效）。
+    insecure_skip_verify: false
+  media:
+    # 本地目录，必须是绝对路径。以只读方式提供，访问不会逃出该目录。
+    dir: /srv/media
+
+# 账号。每个账号有自己的一组挂载，登录后看到的目录树由这些挂载拼成。
+users:
+  alice:
+    # bcrypt 哈希，用 `webdav-mux hash-password` 生成；也可以用 `htpasswd -nB 用户名` 输出中冒号后面的部分。
+    password_hash: "<粘贴 webdav-mux hash-password 的输出>"
+    mounts:
+      # 客户端路径: 上游名:上游路径
+      /movies: nas:/media/movies
+      /work/docs: cloud:/Documents
+      /work/share: nas:/share/team
+      /photos: media:/photos
+  bob:
+    password_hash: "<粘贴 webdav-mux hash-password 的输出>"
+    mounts:
+      # 只有一个挂载时可以直接挂到根。
+      /: nas:/media/movies/kids

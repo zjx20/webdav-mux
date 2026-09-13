@@ -1,0 +1,21 @@
+# 开发容器配置属于个人开发环境，不纳入版本库。
+/.devcontainer/
+
+# `go build -o webdav-mux .` 生成的可执行文件。
+/webdav-mux
+
+# 实际运行用的配置（serve/check 的默认路径）含上游密码和账号哈希，不能提交；
+# 可提交的示例见 config.example.yaml。
+/config.yaml
+
+# 证书和私钥不应进入版本库。
+*.pem
+*.key
+
+# 测试二进制和覆盖率等工具输出。
+*.test
+*.out
+
+# 操作系统和编辑器的临时文件。
+.DS_Store
+*.swp
