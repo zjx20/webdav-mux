@@ -22,6 +22,8 @@ upstreams:
     password: "app-password"
     # 可选：上游使用自签名证书时设为 true（只对这个上游自身生效）。
     insecure_skip_verify: false
+    # 可选：经由下载代理获取文件内容（列目录仍然直连上游）。协议见 docs/proxy-protocol.md。
+    # proxy: http://127.0.0.1:8090/profiles/fast
   media:
     # 本地目录，必须是绝对路径。以只读方式提供，访问不会逃出该目录。
     dir: /srv/media

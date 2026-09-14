@@ -81,6 +81,7 @@ type requestLog struct {
 	user           string
 	upstream       string
 	upstreamStatus int
+	viaProxy       bool
 	err            error
 }
 
@@ -264,6 +265,9 @@ func (s *Server) logRequest(r *http.Request, w *statusWriter, rl *requestLog, el
 	}
 	if rl.upstream != "" {
 		attrs = append(attrs, slog.String("upstream", rl.upstream), slog.Int("upstream_status", rl.upstreamStatus))
+		if rl.viaProxy {
+			attrs = append(attrs, slog.Bool("via_proxy", true))
+		}
 	}
 	level := slog.LevelInfo
 	if rl.err != nil {

@@ -33,7 +33,9 @@ type state struct {
 
 	// external 用于跟随上游重定向到其他源（scheme、主机、端口任一不同）：
 	// 不携带上游凭据，也不沿用上游的 insecure_skip_verify。
-	external   *http.Client
+	external *http.Client
+	// proxy 用于访问下载代理。insecure_skip_verify 只针对上游自身，不用于代理。
+	proxy      *http.Client
 	transports []*http.Transport
 }
 
@@ -53,6 +55,8 @@ type upstream struct {
 	password string
 	hasAuth  bool
 	client   *http.Client
+	// proxy 是下载代理的请求地址（已拼好 "/proxy"，不含查询参数），nil 表示直连上游。
+	proxy *url.URL
 }
 
 type mount struct {
@@ -92,6 +96,7 @@ func newState(cfg *config.Config) (*state, error) {
 	}
 
 	st.external = st.newClient(nil)
+	st.proxy = st.newClient(nil)
 	upstreams := make(map[string]*upstream, len(cfg.Upstreams))
 	for name, cu := range cfg.Upstreams {
 		up := &upstream{name: name}
@@ -108,6 +113,9 @@ func newState(cfg *config.Config) (*state, error) {
 				tlsConfig = &tls.Config{InsecureSkipVerify: true}
 			}
 			up.client = st.newClient(tlsConfig)
+			if cu.Proxy != nil {
+				up.proxy = proxyEndpoint(cu.Proxy)
+			}
 		}
 		up.origin = originOf(&up.base)
 		upstreams[name] = up

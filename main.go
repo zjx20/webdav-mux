@@ -163,7 +163,11 @@ func runCheck(args []string) error {
 		if up.Dir != "" {
 			fmt.Printf("  upstream %s: dir %s\n", name, up.Dir)
 		} else {
-			fmt.Printf("  upstream %s: %s/%s (auth: %v)\n", name, up.URL, strings.Join(up.BasePath, "/"), up.Username != "")
+			proxy := ""
+			if up.Proxy != nil {
+				proxy = ", download proxy: " + up.Proxy.String()
+			}
+			fmt.Printf("  upstream %s: %s/%s (auth: %v%s)\n", name, up.URL, strings.Join(up.BasePath, "/"), up.Username != "", proxy)
 		}
 	}
 	for _, name := range sortedKeys(cfg.Users) {

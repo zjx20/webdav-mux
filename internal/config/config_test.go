@@ -30,6 +30,7 @@ upstreams:
     username: reader
     password: secret
     insecure_skip_verify: true
+    proxy: http://127.0.0.1:8090/profiles/fast/
   plain:
     url: http://10.0.0.2
   media:
@@ -61,7 +62,10 @@ users:
 	if nas.Username != "reader" || nas.Password != "secret" || !nas.InsecureSkipVerify {
 		t.Errorf("nas credentials not parsed: %+v", nas)
 	}
-	if plain := cfg.Upstreams["plain"]; plain.BasePath != nil || plain.Username != "" {
+	if nas.Proxy == nil || nas.Proxy.String() != "http://127.0.0.1:8090/profiles/fast/" {
+		t.Errorf("nas proxy = %v", nas.Proxy)
+	}
+	if plain := cfg.Upstreams["plain"]; plain.BasePath != nil || plain.Username != "" || plain.Proxy != nil {
 		t.Errorf("plain: %+v", plain)
 	}
 	if media := cfg.Upstreams["media"]; media.Dir != dir || media.URL != nil {
@@ -126,6 +130,11 @@ func TestParseErrors(t *testing.T) {
 		{"missing dir", fmt.Sprintf("upstreams:\n  a: {dir: %q}", filepath.Join(dir, "nope")), "no such file"},
 		{"dir is a file", fmt.Sprintf("upstreams:\n  a: {dir: %q}", file), "not a directory"},
 		{"credentials on dir", fmt.Sprintf("upstreams:\n  a: {dir: %q, username: x}", dir), "only to url"},
+		{"proxy on dir", fmt.Sprintf("upstreams:\n  a: {dir: %q, proxy: 'http://p'}", dir), "only to url"},
+		{"proxy scheme", "upstreams:\n  a: {url: 'http://a', proxy: 'socks5://p:1080'}", "scheme"},
+		{"proxy without host", "upstreams:\n  a: {url: 'http://a', proxy: 'http:///x'}", "missing host"},
+		{"proxy with userinfo", "upstreams:\n  a: {url: 'http://a', proxy: 'http://u:p@p'}", "credentials"},
+		{"proxy with query", "upstreams:\n  a: {url: 'http://a', proxy: 'http://p/?profile=x'}", "query"},
 		{"user without hash", "users:\n  u: {}", "password_hash is required"},
 		{"user with plaintext hash", "users:\n  u: {password_hash: hunter2}", "bcrypt"},
 		{"user with placeholder hash", "users:\n  u: {password_hash: '$2a$10$replace.this.with.a.real.bcrypt.hash.generated.by.the.tool'}", "bcrypt"},

@@ -54,6 +54,9 @@ type Upstream struct {
 	Username           string
 	Password           string
 	InsecureSkipVerify bool
+	// Proxy 是下载代理的基地址（docs/proxy-protocol.md），nil 表示直连。
+	// 只用于获取文件内容；PROPFIND 始终直连上游。
+	Proxy *url.URL
 
 	// Dir 是本地目录的绝对路径。
 	Dir string
@@ -94,6 +97,7 @@ type rawUpstream struct {
 	Username           string `yaml:"username"`
 	Password           string `yaml:"password"`
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
+	Proxy              string `yaml:"proxy"`
 }
 
 type rawUser struct {
@@ -172,8 +176,9 @@ func parseUpstream(name string, raw rawUpstream) (*Upstream, error) {
 	case raw.URL != "" && raw.Dir != "":
 		return nil, errors.New("url and dir are mutually exclusive")
 	case raw.Dir != "":
-		if raw.Username != "" || raw.Password != "" || raw.InsecureSkipVerify {
-			return nil, errors.New("username, password and insecure_skip_verify apply only to url upstreams")
+		// 代理只能按 URL 获取内容，而本地目录上游只存在于本进程内。
+		if raw.Username != "" || raw.Password != "" || raw.InsecureSkipVerify || raw.Proxy != "" {
+			return nil, errors.New("username, password, insecure_skip_verify and proxy apply only to url upstreams")
 		}
 		if !filepath.IsAbs(raw.Dir) {
 			return nil, fmt.Errorf("dir %q must be an absolute path", raw.Dir)
@@ -216,10 +221,37 @@ func parseUpstream(name string, raw rawUpstream) (*Upstream, error) {
 		up.Username = raw.Username
 		up.Password = raw.Password
 		up.InsecureSkipVerify = raw.InsecureSkipVerify
+		if raw.Proxy != "" {
+			if up.Proxy, err = parseProxy(raw.Proxy); err != nil {
+				return nil, err
+			}
+		}
 	default:
 		return nil, errors.New("either url or dir is required")
 	}
 	return up, nil
+}
+
+// parseProxy 校验下载代理的基地址。协议规定基地址不带查询参数和片段；
+// 代理自身的认证不在协议之内，所以也不接受 URL 里的用户名密码。
+func parseProxy(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("proxy: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("proxy %q: scheme must be http or https", raw)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("proxy %q: missing host", raw)
+	}
+	if u.User != nil {
+		return nil, fmt.Errorf("proxy %q: credentials in the URL are not supported", raw)
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return nil, fmt.Errorf("proxy %q: query and fragment are not allowed", raw)
+	}
+	return u, nil
 }
 
 func parseUser(name string, raw rawUser, upstreams map[string]*Upstream) (*User, error) {

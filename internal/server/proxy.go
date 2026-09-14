@@ -48,30 +48,45 @@ type upstreamRequest struct {
 	url    *url.URL
 	header http.Header
 	body   []byte
+	// viaProxy 表示经由上游配置的下载代理发出请求，见 docs/proxy-protocol.md。
+	viaProxy bool
 }
 
 var errTooManyRedirects = errors.New("upstream: too many redirects")
 
-// roundTrip 向上游发出请求并跟随重定向。上游凭据只附加在发往上游自身源的请求上，
+// roundTrip 向上游发出请求并跟随重定向。上游凭据只附加在目标与上游自身同源的请求上，
 // 所以跟随到 CDN 直链之类的其他源时不会泄露凭据。
+//
+// 经由下载代理时，每一跳都是一次协议请求：凭据放在发给代理的 Authorization 里，由同一条规则决定
+// 是否携带；代理原样返回的重定向，其 Location 相对目标 URL（而不是代理地址）解析。
 func (st *state) roundTrip(ctx context.Context, up *upstream, ur upstreamRequest) (*http.Response, error) {
 	target := ur.url
 	for hop := 0; ; hop++ {
-		req, err := http.NewRequestWithContext(ctx, ur.method, target.String(), bytes.NewReader(ur.body))
+		sameOrigin := originOf(target) == up.origin
+		reqURL, client := target, st.external
+		if sameOrigin {
+			client = up.client
+		}
+		if ur.viaProxy {
+			reqURL, client = up.proxyURL(target), st.proxy
+		}
+		req, err := http.NewRequestWithContext(ctx, ur.method, reqURL.String(), bytes.NewReader(ur.body))
 		if err != nil {
 			return nil, err
 		}
 		req.Header = ur.header.Clone()
-		client := st.external
-		if originOf(target) == up.origin {
-			client = up.client
-			if up.hasAuth {
-				req.SetBasicAuth(up.username, up.password)
-			}
+		if sameOrigin && up.hasAuth {
+			req.SetBasicAuth(up.username, up.password)
 		}
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, err
+		}
+		if ur.viaProxy {
+			if errType, ok := proxyStatusError(resp.Header); ok {
+				drainAndClose(resp.Body)
+				return nil, &proxyError{status: resp.StatusCode, errType: errType}
+			}
 		}
 		location := resp.Header.Get("Location")
 		if !followable(ur.method, resp.StatusCode) || location == "" {
@@ -160,7 +175,9 @@ func (s *Server) writeTransportError(w http.ResponseWriter, r *http.Request, rl 
 	}
 	status := http.StatusBadGateway
 	var ne net.Error
-	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout() {
+	if pe, ok := errors.AsType[*proxyError](err); ok {
+		status = pe.clientStatus()
+	} else if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout() {
 		status = http.StatusGatewayTimeout
 	}
 	writeStatus(w, status)
@@ -175,6 +192,7 @@ func copyHeaders(dst, src http.Header, names []string) {
 }
 
 // serveGet 处理挂载点下的 GET 和 HEAD：流式转发，Range 和条件请求头原样透传。
+// 上游配置了下载代理时经由代理获取，请求头和响应头的白名单与直连相同。
 func (s *Server) serveGet(w http.ResponseWriter, r *http.Request, st *state, rl *requestLog, m *mount, rest []string, dir bool) {
 	header := make(http.Header)
 	copyHeaders(header, r.Header, getRequestHeaders)
@@ -183,7 +201,10 @@ func (s *Server) serveGet(w http.ResponseWriter, r *http.Request, st *state, rl 
 		// 解压后的响应体与上游给出的 Content-Length、Content-Range、ETag 对不上。
 		header.Set("Accept-Encoding", "identity")
 	}
-	resp, err := st.roundTrip(r.Context(), m.upstream, upstreamRequest{method: r.Method, url: m.upstreamURL(rest, dir), header: header})
+	rl.viaProxy = m.upstream.proxy != nil
+	resp, err := st.roundTrip(r.Context(), m.upstream, upstreamRequest{
+		method: r.Method, url: m.upstreamURL(rest, dir), header: header, viaProxy: rl.viaProxy,
+	})
 	if err != nil {
 		s.writeTransportError(w, r, rl, err)
 		return
