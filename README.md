@@ -152,6 +152,17 @@ docker run -d --name webdav-mux --restart unless-stopped \
   配置里引用的本地目录也要一并挂载，否则校验会报目录不存在。
 - 生成密码哈希：`docker run --rm -it registry.example.com/yourname/webdav-mux:latest hash-password`。
 
+### 使用 Docker Compose
+
+仓库里的 [docker-compose.yaml](docker-compose.yaml) 是一份可直接使用的模板：把配置放在 `./webdav-mux-data/config.yaml`，整个目录以只读方式挂载到容器的 `/etc/webdav-mux`，证书也放在这个目录里。文件里的注释说明了每一项的用意，按需修改镜像名、`user`、端口和本地目录挂载，然后：
+
+```sh
+docker compose run --rm webdav-mux check -config /etc/webdav-mux/config.yaml   # 校验配置
+docker compose up -d                                                           # 启动
+docker compose kill -s HUP webdav-mux                                          # 热加载配置
+docker compose run --rm webdav-mux hash-password                               # 生成密码哈希
+```
+
 ## 配置参考
 
 完整示例见 [config.example.yaml](config.example.yaml)。配置里出现未知字段会直接报错，避免拼错的字段被悄悄忽略。

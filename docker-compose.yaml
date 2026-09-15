@@ -1,0 +1,26 @@
+# 用 Docker Compose 运行 webdav-mux。使用前：
+#   1. mkdir webdav-mux-data && cp config.example.yaml webdav-mux-data/config.yaml，按需修改；
+#   2. docker compose run --rm webdav-mux check -config /etc/webdav-mux/config.yaml 校验配置；
+#   3. docker compose up -d。
+# 改完配置后 docker compose kill -s HUP webdav-mux 热加载（listen 和是否启用 tls 需要重启）。
+
+services:
+  webdav-mux:
+    image: zjx20/webdav-mux:latest
+    container_name: webdav-mux
+    # 镜像默认以 65532 运行；挂载进去的配置、证书、本地目录要对这个 UID 可读。
+    # 这里换成宿主机上文件所有者的 UID:GID，省得逐个改权限。
+    user: "1000:1000"
+    volumes:
+      # 挂整个目录而不是单个文件：编辑器保存时常会替换文件 inode，
+      # 单文件挂载会让容器里看到的仍是旧内容，SIGHUP 热加载就不生效。
+      # 目录里放 config.yaml，启用 TLS 时证书和私钥也放这里，配置中写 /etc/webdav-mux/ 下的路径。
+      - ./webdav-mux-data:/etc/webdav-mux:ro
+      # 本地目录上游：配置里 dir 写的是容器内路径，对应目录要挂进来，建议只读。
+      # - /srv/media:/srv/media:ro
+    ports:
+      # 配置里的 listen 需监听所有地址（默认 ":8080" 即可），否则容器外访问不到。
+      - "8080:8080"
+    # 镜像基于 scratch，没有时区数据，设置 TZ 也不会改变日志时间（始终为 UTC）。
+    # 默认命令是 serve -config /etc/webdav-mux/config.yaml，无需再写 command。
+    restart: unless-stopped
